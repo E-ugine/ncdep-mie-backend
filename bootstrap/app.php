@@ -14,6 +14,11 @@ return Application::configure(basePath: dirname(__DIR__))
     )
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->statefulApi();
+
+        $middleware->alias([
+            'module.access' => \App\Http\Middleware\EnsureModuleAccessGranted::class,
+            'module.access.fresh-pin' => \App\Http\Middleware\RequiresFreshPin::class,
+        ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         $exceptions->shouldRenderJsonWhen(

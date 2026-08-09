@@ -13,8 +13,8 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 
-#[Fillable(['name', 'email', 'password'])]
-#[Hidden(['password', 'remember_token'])]
+#[Fillable(['name', 'email', 'password', 'phone'])]
+#[Hidden(['password', 'remember_token', 'pin_hash'])]
 class User extends Authenticatable
 {
     /** @use HasFactory<UserFactory> */
@@ -29,8 +29,25 @@ class User extends Authenticatable
     {
         return [
             'email_verified_at' => 'datetime',
+            'phone_verified_at' => 'datetime',
             'password' => 'hashed',
         ];
+    }
+
+    /**
+     * Phone OTPs issued for the Market Intelligence and Exchange access gate.
+     */
+    public function phoneOtps(): HasMany
+    {
+        return $this->hasMany(PhoneOtp::class);
+    }
+
+    /**
+     * Audit trail of access attempts to the Market Intelligence and Exchange module.
+     */
+    public function moduleAccessLogs(): HasMany
+    {
+        return $this->hasMany(ModuleAccessLog::class);
     }
 
     /**

@@ -9,6 +9,7 @@ use App\Models\BuyerRequirement;
 use App\Models\Contract;
 use App\Models\Deal;
 use App\Models\Message;
+use App\Models\Supplier;
 use App\Models\SupplyGap;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -25,14 +26,21 @@ class CommandCenterController extends Controller
         $user = $request->user();
         $newRequirementDays = (int) config('mie.command_center.new_requirement_days');
 
+        // Part A of the "close the user↔supplier gap" work: users.supplier_id now exists. When
+        // this user is linked to a supplier profile, the three metrics the spec frames as
+        // capacity-relevant ("new opportunities," "open supply gaps," "total addressable
+        // value") are scoped to product forms that supplier actually has capacity in. The other
+        // metrics (new requirements, active deals, contracts awaiting action, unread messages)
+        // stay global regardless of linkage — nothing in the task asked those to be scoped, and
+        // they aren't capacity-relevant in the same way.
+        $supplier = $user->supplier;
+        $productFormIds = $supplier ? $this->supplierProductFormIds($supplier) : null;
+
         return response()->json([
-            // No user-to-supplier linkage exists anywhere in the schema yet (section 2 and
-            // section 1.1 both deliberately left buyers/suppliers unlinked to `users`), so
-            // these aggregates cannot be scoped to "the user's capacity" as the spec envisions.
-            // Once that linkage exists, this should become 'supplier' for linked users and
-            // filter accordingly.
-            'scope' => 'global',
-            'scope_note' => 'No user-to-supplier linkage exists in the schema yet; returning global aggregates. See task summary.',
+            'scope' => $supplier ? 'supplier' : 'global',
+            'scope_note' => $supplier
+                ? "Scoped to the linked supplier profile (#{$supplier->id}: {$supplier->name}) via its product-form capacity."
+                : 'This user has no linked supplier profile (users.supplier_id is null) — returning global aggregates. Link a supplier profile to scope these metrics.',
 
             'new_buyer_requirements' => [
                 'count' => BuyerRequirement::where('created_at', '>=', now()->subDays($newRequirementDays))->count(),
@@ -41,7 +49,7 @@ class CommandCenterController extends Controller
 
             // gap > 0 is exactly SupplyGap::gap()'s formula (demand_volume - contracted_volume),
             // expressed as a real SQL predicate instead of loading every row into PHP to call it.
-            'open_supply_gaps_count' => SupplyGap::whereRaw('demand_volume - contracted_volume > 0')->count(),
+            'open_supply_gaps_count' => $this->openSupplyGapsCount($productFormIds),
 
             'active_deals_count' => Deal::whereIn('pipeline_stage', [
                 DealPipelineStage::Open->value,
@@ -60,10 +68,19 @@ class CommandCenterController extends Controller
 
             // Proxy for "new market opportunities": unaddressed demand, i.e. requirements with
             // no supplier match yet at all. Full opportunity scoring is section 3.17 (stage 7).
-            'new_market_opportunities_count' => BuyerRequirement::doesntHave('matches')->count(),
+            'new_market_opportunities_count' => $this->newMarketOpportunitiesCount($productFormIds),
 
-            'total_addressable_opportunity_value' => $this->totalAddressableOpportunityValue(),
+            'total_addressable_opportunity_value' => $this->totalAddressableOpportunityValue($productFormIds),
         ]);
+    }
+
+    /**
+     * @return array<int, int>|null the supplier's distinct product_form_ids, or null (meaning
+     *                               "no supplier scope, apply no filter") when there's no supplier.
+     */
+    private function supplierProductFormIds(Supplier $supplier): array
+    {
+        return $supplier->capacity()->pluck('product_form_id')->unique()->values()->all();
     }
 
     /**
@@ -87,15 +104,43 @@ class CommandCenterController extends Controller
             ->count();
     }
 
+    private function openSupplyGapsCount(?array $productFormIds): int
+    {
+        $query = SupplyGap::whereRaw('demand_volume - contracted_volume > 0');
+
+        if ($productFormIds !== null) {
+            $query->whereHas('buyerRequirement.product.productForm', fn ($q) => $q->whereIn('id', $productFormIds));
+        }
+
+        return $query->count();
+    }
+
+    private function newMarketOpportunitiesCount(?array $productFormIds): int
+    {
+        $query = BuyerRequirement::doesntHave('matches');
+
+        if ($productFormIds !== null) {
+            $query->whereHas('product.productForm', fn ($q) => $q->whereIn('id', $productFormIds));
+        }
+
+        return $query->count();
+    }
+
     /**
      * Sum of (volume * average matched offer price) for requirements that don't already have a
      * completed deal. Requirements with no priced offers yet contribute 0 rather than erroring —
      * there's no persisted "market price" table (section 2 never built Prices/Demand/Supply as
      * their own tables), so offers.price via matches is the only real price signal available.
      */
-    private function totalAddressableOpportunityValue(): float
+    private function totalAddressableOpportunityValue(?array $productFormIds): float
     {
-        $requirements = BuyerRequirement::with('matches.offer.negotiation.deal')->get();
+        $query = BuyerRequirement::with('matches.offer.negotiation.deal');
+
+        if ($productFormIds !== null) {
+            $query->whereHas('product.productForm', fn ($q) => $q->whereIn('id', $productFormIds));
+        }
+
+        $requirements = $query->get();
 
         $total = 0.0;
 

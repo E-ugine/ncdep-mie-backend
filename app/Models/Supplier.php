@@ -37,4 +37,13 @@ class Supplier extends Model
     {
         return $this->hasMany(SupplierMatch::class);
     }
+
+    /**
+     * Platform users representing this supplier (part A of the user↔supplier gap closure —
+     * the FK lives on `users`, this is the reverse side).
+     */
+    public function users(): HasMany
+    {
+        return $this->hasMany(User::class);
+    }
 }

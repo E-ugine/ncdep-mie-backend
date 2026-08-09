@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use App\Enums\BuyerRequirementStatus;
+use App\Enums\Incoterm;
 use App\Enums\RequirementFrequency;
 use Database\Factories\BuyerRequirementFactory;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
@@ -15,7 +16,7 @@ use Illuminate\Database\Eloquent\Relations\MorphMany;
 
 #[Fillable([
     'buyer_id', 'product_id', 'market_id', 'volume', 'status',
-    'frequency', 'specification', 'delivery_window_start', 'delivery_window_end',
+    'frequency', 'specification', 'delivery_window_start', 'delivery_window_end', 'incoterm',
 ])]
 class BuyerRequirement extends Model
 {
@@ -31,6 +32,7 @@ class BuyerRequirement extends Model
             'specification' => 'array',
             'delivery_window_start' => 'date',
             'delivery_window_end' => 'date',
+            'incoterm' => Incoterm::class,
         ];
     }
 
@@ -71,5 +73,14 @@ class BuyerRequirement extends Model
     public function currentSources(): HasMany
     {
         return $this->hasMany(CurrentSource::class);
+    }
+
+    /**
+     * Users who've saved this requirement (section 3.4's /save action, section 3.13's
+     * "My Market: saved opportunities" — see the saved_requirements migration).
+     */
+    public function savedByUsers(): HasMany
+    {
+        return $this->hasMany(SavedRequirement::class);
     }
 }

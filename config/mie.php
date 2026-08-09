@@ -12,4 +12,14 @@ return [
         'new_requirement_days' => env('MIE_NEW_REQUIREMENT_DAYS', 7),
     ],
 
+    /*
+    |--------------------------------------------------------------------------
+    | Contract Center (section 3.11)
+    |--------------------------------------------------------------------------
+    */
+    'contracts' => [
+        // A contract counts as "expiring" when its delivery_date falls within this many days.
+        'expiring_within_days' => env('MIE_CONTRACT_EXPIRING_WITHIN_DAYS', 14),
+    ],
+
 ];

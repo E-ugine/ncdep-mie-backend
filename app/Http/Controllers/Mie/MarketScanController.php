@@ -5,7 +5,7 @@ namespace App\Http\Controllers\Mie;
 use App\Enums\ProductFormState;
 use App\Http\Controllers\Controller;
 use App\Models\BuyerRequirement;
-use App\Models\SupplyGap;
+use App\Services\Mie\RequirementPresenter;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -20,6 +20,8 @@ use Illuminate\Validation\Rule;
 class MarketScanController extends Controller
 {
     private const UNSUPPORTED_FILTER_KEYS = ['variety', 'region', 'industry', 'certification'];
+
+    public function __construct(private readonly RequirementPresenter $presenter) {}
 
     public function index(Request $request): JsonResponse
     {
@@ -60,14 +62,7 @@ class MarketScanController extends Controller
                 'requirement_count' => (int) $row->requirement_count,
             ]);
 
-        $query = BuyerRequirement::query()->with([
-            'buyer.country',
-            'product.productForm.commodity',
-            'market.country',
-            'supplyGap',
-            'matches.offer',
-            'currentSources.country',
-        ]);
+        $query = BuyerRequirement::query()->with(RequirementPresenter::EAGER_LOADS);
 
         $this->applyFilters($query, $validated);
 
@@ -84,7 +79,7 @@ class MarketScanController extends Controller
                 'name' => $buyer->name,
                 'country' => $buyer->country->name,
             ]),
-            'requirements' => $requirements->map(fn ($requirement) => $this->presentRequirement($requirement))->values(),
+            'requirements' => $requirements->map(fn ($requirement) => $this->presenter->present($requirement))->values(),
         ]);
     }
 
@@ -139,68 +134,4 @@ class MarketScanController extends Controller
         }
     }
 
-    private function presentRequirement(BuyerRequirement $requirement): array
-    {
-        $gap = $requirement->supplyGap;
-        $prices = $requirement->matches->pluck('offer.price')->filter()->map(fn ($price) => (float) $price);
-
-        return [
-            'id' => $requirement->id,
-            'buyer' => [
-                'id' => $requirement->buyer->id,
-                'name' => $requirement->buyer->name,
-            ],
-            'product' => [
-                'id' => $requirement->product->id,
-                'name' => $requirement->product->name,
-                'form' => $requirement->product->productForm->state->value,
-                'commodity' => $requirement->product->productForm->commodity->name,
-            ],
-            'market' => [
-                'id' => $requirement->market->id,
-                'name' => $requirement->market->name,
-                'country' => $requirement->market->country->name,
-            ],
-            'volume' => (float) $requirement->volume,
-            'frequency' => $requirement->frequency?->value,
-            'status' => $requirement->status->value,
-            'current_source' => $requirement->currentSources->map(fn ($source) => [
-                'country' => $source->country->name,
-                'supplier_name' => $source->supplier_name,
-                'estimated_volume' => $source->estimated_volume !== null ? (float) $source->estimated_volume : null,
-            ])->values(),
-            'supply_gap' => $gap ? [
-                'demand_volume' => (float) $gap->demand_volume,
-                'contracted_volume' => (float) $gap->contracted_volume,
-                'gap' => $gap->gap(),
-            ] : null,
-            'price_range' => [
-                'min' => $prices->isNotEmpty() ? $prices->min() : null,
-                'max' => $prices->isNotEmpty() ? $prices->max() : null,
-            ],
-            'delivery_window' => [
-                'start' => $requirement->delivery_window_start?->toDateString(),
-                'end' => $requirement->delivery_window_end?->toDateString(),
-            ],
-            'specification' => $requirement->specification,
-            'opportunity_assessment_preliminary' => $this->preliminaryOpportunityAssessment($gap),
-        ];
-    }
-
-    /**
-     * Honest, simple proxy — NOT the weighted section 3.17 engine (that's stage 7).
-     * = (gap / demand_volume) * 100, clamped to [0, 100]: the share of total demand for this
-     * requirement that remains uncontracted. Null when there's no supply-gap data to compute
-     * from (no fake fallback number).
-     */
-    private function preliminaryOpportunityAssessment(?SupplyGap $gap): ?float
-    {
-        if (! $gap || (float) $gap->demand_volume <= 0) {
-            return null;
-        }
-
-        $ratio = $gap->gap() / (float) $gap->demand_volume;
-
-        return round(max(0, min(100, $ratio * 100)), 2);
-    }
 }

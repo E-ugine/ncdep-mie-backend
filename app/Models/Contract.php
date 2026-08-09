@@ -2,7 +2,9 @@
 
 namespace App\Models;
 
+use App\Enums\ComplianceStatus;
 use App\Enums\ContractStatus;
+use App\Enums\ShipmentStatus;
 use Database\Factories\ContractFactory;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
@@ -11,7 +13,10 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\MorphMany;
 
-#[Fillable(['deal_id', 'contract_number', 'value', 'volume', 'currency', 'incoterm', 'delivery_date', 'payment_terms', 'status'])]
+#[Fillable([
+    'deal_id', 'contract_number', 'value', 'volume', 'price', 'currency', 'incoterm',
+    'delivery_date', 'payment_terms', 'status', 'documents', 'compliance_status', 'shipment_status',
+])]
 class Contract extends Model
 {
     /** @use HasFactory<ContractFactory> */
@@ -23,7 +28,11 @@ class Contract extends Model
             'status' => ContractStatus::class,
             'value' => 'decimal:2',
             'volume' => 'decimal:2',
+            'price' => 'decimal:2',
             'delivery_date' => 'date',
+            'documents' => 'array',
+            'compliance_status' => ComplianceStatus::class,
+            'shipment_status' => ShipmentStatus::class,
         ];
     }
 

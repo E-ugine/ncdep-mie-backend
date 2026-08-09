@@ -9,11 +9,12 @@ use Database\Factories\UserFactory;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Attributes\Hidden;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 
-#[Fillable(['name', 'email', 'password', 'phone'])]
+#[Fillable(['name', 'email', 'password', 'phone', 'supplier_id'])]
 #[Hidden(['password', 'remember_token', 'pin_hash'])]
 class User extends Authenticatable
 {
@@ -63,5 +64,19 @@ class User extends Authenticatable
     public function sentMessages(): HasMany
     {
         return $this->hasMany(Message::class, 'sender_id');
+    }
+
+    /**
+     * The supplier profile this user represents, if any. Nullable — most of the spec's flows
+     * assume a supplier/exporter user, but not every logged-in user is necessarily linked yet.
+     */
+    public function supplier(): BelongsTo
+    {
+        return $this->belongsTo(Supplier::class);
+    }
+
+    public function savedRequirements(): HasMany
+    {
+        return $this->hasMany(SavedRequirement::class);
     }
 }

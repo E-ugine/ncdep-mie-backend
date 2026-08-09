@@ -9,6 +9,10 @@ use App\Models\Contract;
 use App\Models\Conversation;
 use App\Models\Deal;
 use App\Models\Message;
+use App\Models\Product;
+use App\Models\ProductForm;
+use App\Models\Supplier;
+use App\Models\SupplierCapacity;
 use App\Models\SupplierMatch;
 use App\Models\SupplyGap;
 use App\Models\User;
@@ -37,12 +41,52 @@ class CommandCenterTest extends TestCase
         return $user;
     }
 
+    /**
+     * Switches the acting user to one linked to a supplier that has capacity for exactly
+     * $capableProductFormId — used to prove the command-center metrics narrow to that supplier's
+     * product forms once linked, rather than staying global.
+     */
+    private function actingAsSupplierLinkedUser(int $capableProductFormId): User
+    {
+        $supplier = Supplier::factory()->create();
+        SupplierCapacity::factory()->create(['supplier_id' => $supplier->id, 'product_form_id' => $capableProductFormId]);
+
+        $user = User::factory()->create(['supplier_id' => $supplier->id]);
+        $this->actingAs($user)->withSession(['module_access.granted_at' => now()->toISOString()]);
+
+        return $user;
+    }
+
+    private function requirementOnProductForm(int $productFormId, array $overrides = []): BuyerRequirement
+    {
+        $product = Product::factory()->create(['product_form_id' => $productFormId]);
+
+        return BuyerRequirement::factory()->create(array_merge(['product_id' => $product->id], $overrides));
+    }
+
     public function test_endpoint_is_blocked_without_module_access(): void
     {
         $user = User::factory()->create();
 
         $this->actingAs($user)->getJson('/api/mie/command-center')
             ->assertStatus(403);
+    }
+
+    public function test_scope_and_scope_note_reflect_supplier_linkage(): void
+    {
+        $unlinkedUser = $this->actingAsGatedUser();
+        $this->assertNull($unlinkedUser->supplier_id);
+
+        $unlinked = $this->getJson('/api/mie/command-center')->json();
+        $this->assertSame('global', $unlinked['scope']);
+        $this->assertStringContainsString('no linked supplier profile', $unlinked['scope_note']);
+
+        $form = ProductForm::factory()->create();
+        $linkedUser = $this->actingAsSupplierLinkedUser($form->id);
+
+        $linked = $this->getJson('/api/mie/command-center')->json();
+        $this->assertSame('supplier', $linked['scope']);
+        $this->assertStringContainsString((string) $linkedUser->supplier_id, $linked['scope_note']);
     }
 
     public function test_new_buyer_requirements_count_reflects_real_records_and_changes(): void
@@ -73,11 +117,29 @@ class CommandCenterTest extends TestCase
 
         $first = $this->getJson('/api/mie/command-center')->json();
         $this->assertSame(0, $first['open_supply_gaps_count']);
+        $this->assertSame('global', $first['scope']);
 
         SupplyGap::factory()->create(['demand_volume' => 1000, 'contracted_volume' => 400]); // gap = 600, open
 
         $second = $this->getJson('/api/mie/command-center')->json();
         $this->assertSame(1, $second['open_supply_gaps_count']);
+
+        // Supplier-scoped case: two more open gaps on different product forms; a supplier linked
+        // to only ONE of those forms should see the count narrow to just that one, not all three.
+        $matchingForm = ProductForm::factory()->create();
+        $otherForm = ProductForm::factory()->create();
+
+        $matchingRequirement = $this->requirementOnProductForm($matchingForm->id);
+        $otherRequirement = $this->requirementOnProductForm($otherForm->id);
+
+        SupplyGap::factory()->create(['buyer_requirement_id' => $matchingRequirement->id, 'demand_volume' => 500, 'contracted_volume' => 100]);
+        SupplyGap::factory()->create(['buyer_requirement_id' => $otherRequirement->id, 'demand_volume' => 500, 'contracted_volume' => 100]);
+
+        $this->actingAsSupplierLinkedUser($matchingForm->id);
+
+        $scoped = $this->getJson('/api/mie/command-center')->json();
+        $this->assertSame('supplier', $scoped['scope']);
+        $this->assertSame(1, $scoped['open_supply_gaps_count']);
     }
 
     public function test_active_deals_count_only_counts_active_pipeline_stages(): void
@@ -141,6 +203,20 @@ class CommandCenterTest extends TestCase
         $response = $this->getJson('/api/mie/command-center')->json();
 
         $this->assertSame(1, $response['new_market_opportunities_count']);
+
+        // Supplier-scoped case: an unmatched requirement on a form the linked supplier does NOT
+        // have capacity in must not count, even though it's unmatched exactly like the one that does.
+        $matchingForm = ProductForm::factory()->create();
+        $otherForm = ProductForm::factory()->create();
+
+        $this->requirementOnProductForm($matchingForm->id); // unmatched, supplier can produce this
+        $this->requirementOnProductForm($otherForm->id); // unmatched, but supplier can't produce this
+
+        $this->actingAsSupplierLinkedUser($matchingForm->id);
+
+        $scoped = $this->getJson('/api/mie/command-center')->json();
+        $this->assertSame('supplier', $scoped['scope']);
+        $this->assertSame(1, $scoped['new_market_opportunities_count']);
     }
 
     public function test_total_addressable_opportunity_value_is_null_safe_and_excludes_completed_deals(): void
@@ -170,5 +246,25 @@ class CommandCenterTest extends TestCase
 
         // 100 * 10 = 1000 from the priced/undealt requirement; the completed one is excluded entirely.
         $this->assertEquals(1000.0, $response['total_addressable_opportunity_value']);
+
+        // Supplier-scoped case: a priced, undealt requirement on a form the linked supplier can't
+        // produce must not contribute to their scoped total, even though it would count globally.
+        $matchingForm = ProductForm::factory()->create();
+        $otherForm = ProductForm::factory()->create();
+
+        $matchingRequirement = $this->requirementOnProductForm($matchingForm->id, ['volume' => 50]);
+        $matchingMatch = SupplierMatch::factory()->create(['buyer_requirement_id' => $matchingRequirement->id]);
+        \App\Models\Offer::factory()->create(['match_id' => $matchingMatch->id, 'price' => 4]);
+
+        $otherRequirement = $this->requirementOnProductForm($otherForm->id, ['volume' => 1000]);
+        $otherMatch = SupplierMatch::factory()->create(['buyer_requirement_id' => $otherRequirement->id]);
+        \App\Models\Offer::factory()->create(['match_id' => $otherMatch->id, 'price' => 900]);
+
+        $this->actingAsSupplierLinkedUser($matchingForm->id);
+
+        $scoped = $this->getJson('/api/mie/command-center')->json();
+        $this->assertSame('supplier', $scoped['scope']);
+        // 50 * 4 = 200 from the matching-form requirement only; the other-form one (1000 * 900) is excluded.
+        $this->assertEquals(200.0, $scoped['total_addressable_opportunity_value']);
     }
 }

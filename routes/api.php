@@ -55,6 +55,7 @@ Route::middleware(['auth:sanctum', 'module.access'])->prefix('mie')->group(funct
     // Section 3.4 — Requirements Exchange
     Route::prefix('requirements')->group(function () {
         Route::get('/{id}', [RequirementController::class, 'show']);
+        Route::get('/{id}/opportunity-score', [RequirementController::class, 'opportunityScore']); // section 3.17
         Route::post('/{id}/match', [RequirementController::class, 'match']);
         Route::post('/{id}/message', [RequirementController::class, 'message']);
 

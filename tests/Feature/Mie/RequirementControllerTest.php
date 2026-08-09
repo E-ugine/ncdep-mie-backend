@@ -60,10 +60,12 @@ class RequirementControllerTest extends TestCase
         $this->assertSame('Organic', $response['certification']);
         $this->assertArrayHasKey('destination', $response);
         $this->assertArrayHasKey('uncovered_volume', $response);
-        $this->assertArrayHasKey('opportunity_assessment_preliminary', $response);
+        $this->assertArrayHasKey('opportunity_score', $response);
+        $this->assertArrayHasKey('composite_score', $response['opportunity_score']);
+        $this->assertArrayHasKey('priority_tier', $response['opportunity_score']);
     }
 
-    public function test_match_creates_a_real_match_when_supplier_capacity_is_sufficient(): void
+    public function test_match_creates_a_real_scored_match_when_supplier_capacity_is_sufficient(): void
     {
         $this->actingAsGatedUser();
 
@@ -81,9 +83,15 @@ class RequirementControllerTest extends TestCase
         $response = $this->postJson("/api/mie/requirements/{$requirement->id}/match")->assertCreated()->json();
 
         $this->assertTrue($response['matched']);
-        $this->assertSame($supplier->id, $response['match']['supplier_id']);
-        $this->assertSame(50, $response['match']['score']); // obvious placeholder, not a real formula
-        $this->assertEquals(100.0, $response['match']['fulfillable_volume']); // min(requirement volume, capacity)
+        $this->assertCount(1, $response['matches']);
+        $match = $response['matches'][0];
+
+        $this->assertSame($supplier->id, $match['supplier_id']);
+        $this->assertGreaterThan(0, $match['score']);
+        $this->assertLessThanOrEqual(100, $match['score']);
+        $this->assertEquals(100.0, $match['fulfillable_volume']); // min(requirement volume, capacity)
+        $this->assertArrayHasKey('capacity_fit', $match['reason']);
+        $this->assertArrayHasKey('spec_compliance', $match['reason']);
 
         $this->assertDatabaseHas('matches', [
             'buyer_requirement_id' => $requirement->id,
@@ -91,7 +99,7 @@ class RequirementControllerTest extends TestCase
         ]);
     }
 
-    public function test_match_reports_no_match_when_no_supplier_has_enough_capacity(): void
+    public function test_match_reports_no_match_when_no_supplier_capacity_exists_for_the_product_form(): void
     {
         $this->actingAsGatedUser();
 
@@ -99,18 +107,56 @@ class RequirementControllerTest extends TestCase
         $product = Product::factory()->create(['product_form_id' => $productForm->id]);
         $requirement = BuyerRequirement::factory()->create(['product_id' => $product->id, 'volume' => 1000]);
 
-        $supplier = Supplier::factory()->create();
-        SupplierCapacity::factory()->create([
-            'supplier_id' => $supplier->id,
-            'product_form_id' => $productForm->id,
-            'available_volume' => 10, // not enough
-        ]);
-
+        // No supplier_capacity row at all for this product form — a genuinely empty candidate pool.
         $response = $this->postJson("/api/mie/requirements/{$requirement->id}/match")->assertOk()->json();
 
         $this->assertFalse($response['matched']);
         $this->assertSame('no_supplier_capacity_available', $response['code']);
         $this->assertDatabaseCount('matches', 0);
+    }
+
+    /**
+     * Section 3.16's real scoring must actually differentiate candidates, not just create one
+     * placeholder — a supplier who can fully cover the shortfall AND holds the required
+     * certification must score higher than one who can barely cover a fraction of it and lacks
+     * the certification. Asserts ORDERING, not a brittle exact number, per the task's own
+     * instruction on how to test this honestly.
+     */
+    public function test_match_scoring_ranks_a_better_fit_supplier_above_a_partial_fit_supplier(): void
+    {
+        $this->actingAsGatedUser();
+
+        $productForm = ProductForm::factory()->create();
+        $product = Product::factory()->create(['product_form_id' => $productForm->id]);
+        $requirement = BuyerRequirement::factory()->create([
+            'product_id' => $product->id,
+            'volume' => 1000,
+            'specification' => ['certification' => 'Organic'],
+        ]);
+
+        $strongSupplier = Supplier::factory()->create();
+        SupplierCapacity::factory()->create([
+            'supplier_id' => $strongSupplier->id,
+            'product_form_id' => $productForm->id,
+            'available_volume' => 1000, // fully covers the requirement
+            'certifications' => ['Organic'], // holds the required certification
+        ]);
+
+        $weakSupplier = Supplier::factory()->create();
+        SupplierCapacity::factory()->create([
+            'supplier_id' => $weakSupplier->id,
+            'product_form_id' => $productForm->id,
+            'available_volume' => 50, // barely covers 5% of the shortfall
+            'certifications' => ['FairTrade'], // does NOT hold the required certification
+        ]);
+
+        $response = $this->postJson("/api/mie/requirements/{$requirement->id}/match")->assertCreated()->json();
+
+        $scoresBySupplier = collect($response['matches'])->pluck('score', 'supplier_id');
+
+        $this->assertGreaterThan($scoresBySupplier[$weakSupplier->id], $scoresBySupplier[$strongSupplier->id]);
+        // Response is sorted best-first.
+        $this->assertSame($strongSupplier->id, $response['matches'][0]['supplier_id']);
     }
 
     public function test_message_creates_conversation_and_reuses_it_on_second_call(): void

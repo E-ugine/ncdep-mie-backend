@@ -8,7 +8,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
-#[Fillable(['supplier_id', 'product_form_id', 'capacity_volume', 'available_volume'])]
+#[Fillable(['supplier_id', 'product_form_id', 'capacity_volume', 'available_volume', 'certifications'])]
 class SupplierCapacity extends Model
 {
     /** @use HasFactory<SupplierCapacityFactory> */
@@ -21,6 +21,7 @@ class SupplierCapacity extends Model
         return [
             'capacity_volume' => 'decimal:2',
             'available_volume' => 'decimal:2',
+            'certifications' => 'array',
         ];
     }
 

@@ -9,9 +9,10 @@ use App\Models\BuyerRequirement;
 use App\Models\Negotiation;
 use App\Models\Offer;
 use App\Models\SavedRequirement;
-use App\Models\SupplierCapacity;
 use App\Models\SupplierMatch;
 use App\Services\Mie\ConversationMessenger;
+use App\Services\Mie\MatchScorer;
+use App\Services\Mie\OpportunityScorer;
 use App\Services\Mie\RequirementPresenter;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -21,13 +22,17 @@ use Illuminate\Support\Str;
  * Section 3.4 — Requirements Exchange: single-requirement detail plus the six user actions.
  * Detail reuses the same RequirementPresenter as market-scan and the buyer profile's
  * current_open_needs — see that class for why. message() reuses ConversationMessenger, shared
- * with section 3.12's deal/contract messaging (DealController/ContractController).
+ * with section 3.12's deal/contract messaging (DealController/ContractController). match() and
+ * opportunityScore() are section 3.16/3.17's real engines (stage 7), replacing the earlier
+ * hardcoded-score-of-50 stub.
  */
 class RequirementController extends Controller
 {
     public function __construct(
         private readonly RequirementPresenter $presenter,
         private readonly ConversationMessenger $messenger,
+        private readonly MatchScorer $matchScorer,
+        private readonly OpportunityScorer $opportunityScorer,
     ) {}
 
     public function show(int $id): JsonResponse
@@ -38,50 +43,79 @@ class RequirementController extends Controller
     }
 
     /**
-     * Naive match: does any supplier_capacity row for this requirement's product_form have
-     * enough available volume? If so, create a real `matches` row against that supplier. This is
-     * NOT section 3.16's AI matching — the score is a fixed, obviously-fake placeholder, not a
-     * formula, so nobody downstream mistakes it for a real assessment. That's stage 7's job.
+     * Section 3.16 — real AI matching (replaces stage 4's hardcoded score-of-50 stub). Evaluates
+     * EVERY supplier_capacity row for this requirement's product form (see
+     * MatchScorer::candidatesFor()) and creates a real `matches` row for every candidate scoring
+     * above config('mie_scoring.match.minimum_score_threshold') — not just one placeholder match.
      */
     public function match(int $id): JsonResponse
     {
-        $requirement = BuyerRequirement::with('product')->findOrFail($id);
+        $requirement = BuyerRequirement::with(['product', 'supplyGap', 'market'])->findOrFail($id);
 
-        $capacity = SupplierCapacity::where('product_form_id', $requirement->product->product_form_id)
-            ->where('available_volume', '>=', $requirement->volume)
-            ->orderByDesc('available_volume')
-            ->first();
+        $candidates = $this->matchScorer->candidatesFor($requirement);
 
-        if (! $capacity) {
+        if ($candidates->isEmpty()) {
             return response()->json([
                 'matched' => false,
-                'message' => 'No supplier currently has enough available capacity for this requirement.',
+                'message' => "No supplier has any capacity recorded for this requirement's product form.",
                 'code' => 'no_supplier_capacity_available',
             ]);
         }
 
-        $match = SupplierMatch::create([
-            'buyer_requirement_id' => $requirement->id,
-            'supplier_id' => $capacity->supplier_id,
-            // PLACEHOLDER — not a real score. Section 3.16's AI matching (stage 7) replaces this.
-            // Fixed at 50 deliberately so it can never be mistaken for a computed assessment.
-            'score' => 50,
-            'reason' => [
-                'note' => 'Placeholder match: naive product-form + available-volume check only. No real scoring applied (section 3.16 AI matching is stage 7).',
-            ],
-            'fulfillable_volume' => min((float) $requirement->volume, (float) $capacity->available_volume),
-        ]);
+        $threshold = (int) config('mie_scoring.match.minimum_score_threshold');
+        $created = [];
 
-        return response()->json([
-            'matched' => true,
-            'match' => [
+        foreach ($candidates as $capacity) {
+            $result = $this->matchScorer->score($requirement, $capacity);
+
+            if ($result['score'] <= $threshold) {
+                continue;
+            }
+
+            $match = SupplierMatch::create([
+                'buyer_requirement_id' => $requirement->id,
+                'supplier_id' => $capacity->supplier_id,
+                'score' => (int) round($result['score']),
+                'reason' => $result['breakdown'],
+                'fulfillable_volume' => $result['fulfillable_volume'],
+            ]);
+
+            $created[] = [
                 'id' => $match->id,
                 'supplier_id' => $match->supplier_id,
                 'score' => $match->score,
-                'fulfillable_volume' => (float) $match->fulfillable_volume,
                 'reason' => $match->reason,
-            ],
+                'fulfillable_volume' => (float) $match->fulfillable_volume,
+                'fulfillable_share' => $result['fulfillable_share'],
+            ];
+        }
+
+        if (empty($created)) {
+            return response()->json([
+                'matched' => false,
+                'message' => "No candidate supplier scored above the minimum threshold ({$threshold}).",
+                'code' => 'no_candidate_above_threshold',
+            ]);
+        }
+
+        // Best candidates first — the caller (e.g. /offer) most likely wants the strongest match.
+        usort($created, fn ($a, $b) => $b['score'] <=> $a['score']);
+
+        return response()->json([
+            'matched' => true,
+            'matches' => $created,
         ], 201);
+    }
+
+    /**
+     * Section 3.17 — real opportunity scoring (replaces stage 3's gap/demand-percentage stub,
+     * which now lives on inside this composite as the supply_gap_size component).
+     */
+    public function opportunityScore(int $id): JsonResponse
+    {
+        $requirement = BuyerRequirement::with(RequirementPresenter::EAGER_LOADS)->findOrFail($id);
+
+        return response()->json($this->opportunityScorer->score($requirement));
     }
 
     public function message(Request $request, int $id): JsonResponse

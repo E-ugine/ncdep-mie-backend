@@ -3,13 +3,14 @@
 namespace App\Services\Mie;
 
 use App\Models\BuyerRequirement;
-use App\Models\SupplyGap;
 
 /**
  * Shared per-requirement enrichment logic. Originally inline in MarketScanController (section
  * 3.2); section 3.4's requirement-detail endpoint and section 3.3's buyer profile
  * (`current_open_needs`) need almost the identical field set, so it's extracted here and reused
  * by all three rather than duplicated three times — the task explicitly asked for this reuse.
+ * Stage 7 adds `opportunity_score` here too (via OpportunityScorer), same reuse discipline,
+ * replacing the earlier `opportunity_assessment_preliminary` stub.
  */
 class RequirementPresenter
 {
@@ -21,6 +22,8 @@ class RequirementPresenter
         'matches.offer',
         'currentSources.country',
     ];
+
+    public function __construct(private readonly OpportunityScorer $opportunityScorer) {}
 
     public function present(BuyerRequirement $requirement): array
     {
@@ -83,24 +86,10 @@ class RequirementPresenter
                 'start' => $requirement->delivery_window_start?->toDateString(),
                 'end' => $requirement->delivery_window_end?->toDateString(),
             ],
-            'opportunity_assessment_preliminary' => $this->preliminaryOpportunityAssessment($gap),
+            // The real section 3.17 weighted composite (see OpportunityScorer) — replaces the
+            // former `opportunity_assessment_preliminary` gap/demand stub. That old formula
+            // still exists, just as this composite's `supply_gap_size` component now.
+            'opportunity_score' => $this->opportunityScorer->score($requirement),
         ];
-    }
-
-    /**
-     * Honest, simple proxy — NOT the weighted section 3.17 engine (that's stage 7).
-     * = (gap / demand_volume) * 100, clamped to [0, 100]: the share of total demand for this
-     * requirement that remains uncontracted. Null when there's no supply-gap data to compute
-     * from (no fake fallback number).
-     */
-    private function preliminaryOpportunityAssessment(?SupplyGap $gap): ?float
-    {
-        if (! $gap || (float) $gap->demand_volume <= 0) {
-            return null;
-        }
-
-        $ratio = $gap->gap() / (float) $gap->demand_volume;
-
-        return round(max(0, min(100, $ratio * 100)), 2);
     }
 }

@@ -106,8 +106,14 @@ class MarketScanTest extends TestCase
         $this->assertEquals(20.0, $result['price_range']['min']);
         $this->assertEquals(20.0, $result['price_range']['max']);
         $this->assertCount(1, $result['current_source']);
-        // gap/demand = 400/1000 = 40%
-        $this->assertEquals(40.0, $result['opportunity_assessment_preliminary']);
+
+        // Section 3.17's real weighted composite (stage 7) replaced the old flat
+        // opportunity_assessment_preliminary stub. The overall composite depends on several
+        // components, so assert the one deterministic, precisely-known sub-component
+        // (supply_gap_size = gap/demand = 400/1000 = 40%) rather than a brittle exact composite.
+        $this->assertArrayHasKey('opportunity_score', $result);
+        $this->assertEquals(40.0, $result['opportunity_score']['breakdown']['supply_gap_size']['value']);
+        $this->assertContains($result['opportunity_score']['priority_tier'], ['high', 'medium', 'low']);
 
         $this->assertNotEmpty($response['demand_by_region']);
         $this->assertCount(1, $response['buyers']);

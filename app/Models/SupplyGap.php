@@ -2,13 +2,16 @@
 
 namespace App\Models;
 
+use App\Observers\SupplyGapObserver;
 use Database\Factories\SupplyGapFactory;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
+use Illuminate\Database\Eloquent\Attributes\ObservedBy;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 #[Fillable(['buyer_requirement_id', 'demand_volume', 'contracted_volume'])]
+#[ObservedBy(SupplyGapObserver::class)]
 class SupplyGap extends Model
 {
     /** @use HasFactory<SupplyGapFactory> */

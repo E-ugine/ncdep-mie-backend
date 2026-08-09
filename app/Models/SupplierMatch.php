@@ -2,8 +2,10 @@
 
 namespace App\Models;
 
+use App\Observers\SupplierMatchObserver;
 use Database\Factories\SupplierMatchFactory;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
+use Illuminate\Database\Eloquent\Attributes\ObservedBy;
 use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -12,6 +14,7 @@ use Illuminate\Database\Eloquent\Relations\HasOne;
 use InvalidArgumentException;
 
 #[Fillable(['buyer_requirement_id', 'supplier_id', 'score', 'reason', 'fulfillable_volume'])]
+#[ObservedBy(SupplierMatchObserver::class)]
 class SupplierMatch extends Model
 {
     /** @use HasFactory<SupplierMatchFactory> */

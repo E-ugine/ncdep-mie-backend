@@ -11,6 +11,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Contract;
 use App\Models\Deal;
 use App\Models\Negotiation;
+use App\Services\Mie\ConversationMessenger;
 use App\Services\Mie\DealStageTransitioner;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -28,7 +29,40 @@ class ContractController extends Controller
 {
     private const VIEWS = ['draft', 'offers_counteroffers', 'active', 'expiring', 'completed', 'cancelled'];
 
-    public function __construct(private readonly DealStageTransitioner $transitioner) {}
+    public function __construct(
+        private readonly DealStageTransitioner $transitioner,
+        private readonly ConversationMessenger $messenger,
+    ) {}
+
+    /**
+     * Section 3.12 — contract messaging, same reused ConversationMessenger as requirement and
+     * deal messaging.
+     */
+    public function message(Request $request, int $id): JsonResponse
+    {
+        $contract = Contract::findOrFail($id);
+
+        $validated = $request->validate([
+            'message' => ['required', 'string'],
+        ]);
+
+        $result = $this->messenger->sendToConversable(
+            $contract,
+            $request->user()->id,
+            $validated['message'],
+            "Contract #{$contract->id}",
+        );
+
+        return response()->json([
+            'conversation_id' => $result['conversation']->id,
+            'message' => [
+                'id' => $result['message']->id,
+                'body' => $result['message']->body,
+                'sender_id' => $result['message']->sender_id,
+                'created_at' => $result['message']->created_at->toISOString(),
+            ],
+        ], 201);
+    }
 
     public function index(Request $request): JsonResponse
     {

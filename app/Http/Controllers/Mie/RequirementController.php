@@ -6,13 +6,12 @@ use App\Enums\NegotiationStatus;
 use App\Enums\OfferStatus;
 use App\Http\Controllers\Controller;
 use App\Models\BuyerRequirement;
-use App\Models\Conversation;
-use App\Models\Message;
 use App\Models\Negotiation;
 use App\Models\Offer;
 use App\Models\SavedRequirement;
 use App\Models\SupplierCapacity;
 use App\Models\SupplierMatch;
+use App\Services\Mie\ConversationMessenger;
 use App\Services\Mie\RequirementPresenter;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -21,11 +20,15 @@ use Illuminate\Support\Str;
 /**
  * Section 3.4 — Requirements Exchange: single-requirement detail plus the six user actions.
  * Detail reuses the same RequirementPresenter as market-scan and the buyer profile's
- * current_open_needs — see that class for why.
+ * current_open_needs — see that class for why. message() reuses ConversationMessenger, shared
+ * with section 3.12's deal/contract messaging (DealController/ContractController).
  */
 class RequirementController extends Controller
 {
-    public function __construct(private readonly RequirementPresenter $presenter) {}
+    public function __construct(
+        private readonly RequirementPresenter $presenter,
+        private readonly ConversationMessenger $messenger,
+    ) {}
 
     public function show(int $id): JsonResponse
     {
@@ -89,24 +92,20 @@ class RequirementController extends Controller
             'message' => ['required', 'string'],
         ]);
 
-        $conversation = Conversation::firstOrCreate(
-            ['conversable_type' => BuyerRequirement::class, 'conversable_id' => $requirement->id],
-            ['subject' => "Requirement #{$requirement->id}"],
+        $result = $this->messenger->sendToConversable(
+            $requirement,
+            $request->user()->id,
+            $validated['message'],
+            "Requirement #{$requirement->id}",
         );
 
-        $message = Message::create([
-            'conversation_id' => $conversation->id,
-            'sender_id' => $request->user()->id,
-            'body' => $validated['message'],
-        ]);
-
         return response()->json([
-            'conversation_id' => $conversation->id,
+            'conversation_id' => $result['conversation']->id,
             'message' => [
-                'id' => $message->id,
-                'body' => $message->body,
-                'sender_id' => $message->sender_id,
-                'created_at' => $message->created_at->toISOString(),
+                'id' => $result['message']->id,
+                'body' => $result['message']->body,
+                'sender_id' => $result['message']->sender_id,
+                'created_at' => $result['message']->created_at->toISOString(),
             ],
         ], 201);
     }

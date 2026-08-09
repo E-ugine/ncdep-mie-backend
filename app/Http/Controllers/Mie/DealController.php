@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Mie;
 use App\Enums\DealPipelineStage;
 use App\Http\Controllers\Controller;
 use App\Models\Deal;
+use App\Services\Mie\ConversationMessenger;
 use App\Services\Mie\DealStageTransitioner;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -12,7 +13,41 @@ use Illuminate\Validation\Rule;
 
 class DealController extends Controller
 {
-    public function __construct(private readonly DealStageTransitioner $transitioner) {}
+    public function __construct(
+        private readonly DealStageTransitioner $transitioner,
+        private readonly ConversationMessenger $messenger,
+    ) {}
+
+    /**
+     * Section 3.12 — deal messaging, same pattern as (and reusing) section 3.4's requirement
+     * messaging: ConversationMessenger::sendToConversable() creates the conversation if none
+     * exists yet, then posts the first/next message into it.
+     */
+    public function message(Request $request, int $id): JsonResponse
+    {
+        $deal = Deal::findOrFail($id);
+
+        $validated = $request->validate([
+            'message' => ['required', 'string'],
+        ]);
+
+        $result = $this->messenger->sendToConversable(
+            $deal,
+            $request->user()->id,
+            $validated['message'],
+            "Deal #{$deal->id}",
+        );
+
+        return response()->json([
+            'conversation_id' => $result['conversation']->id,
+            'message' => [
+                'id' => $result['message']->id,
+                'body' => $result['message']->body,
+                'sender_id' => $result['message']->sender_id,
+                'created_at' => $result['message']->created_at->toISOString(),
+            ],
+        ], 201);
+    }
 
     public function index(Request $request): JsonResponse
     {

@@ -3,8 +3,11 @@
 use App\Http\Controllers\Mie\BuyerController;
 use App\Http\Controllers\Mie\CommandCenterController;
 use App\Http\Controllers\Mie\ContractController;
+use App\Http\Controllers\Mie\ConversationController;
+use App\Http\Controllers\Mie\DashboardController;
 use App\Http\Controllers\Mie\DealController;
 use App\Http\Controllers\Mie\MarketScanController;
+use App\Http\Controllers\Mie\MessageCenterController;
 use App\Http\Controllers\Mie\NegotiationController;
 use App\Http\Controllers\Mie\RequirementController;
 use App\Http\Controllers\ModuleAccess\PhoneVerificationController;
@@ -71,6 +74,7 @@ Route::middleware(['auth:sanctum', 'module.access'])->prefix('mie')->group(funct
         Route::get('/', [DealController::class, 'index']);
         Route::get('/{id}', [DealController::class, 'show']);
         Route::patch('/{id}/stage', [DealController::class, 'updateStage']);
+        Route::post('/{id}/message', [DealController::class, 'message']); // section 3.12
 
         // Section 3.11 — the contract-signing moment; requires a freshly-verified PIN.
         Route::post('/{id}/contract', [ContractController::class, 'store'])
@@ -81,5 +85,16 @@ Route::middleware(['auth:sanctum', 'module.access'])->prefix('mie')->group(funct
     Route::prefix('contracts')->group(function () {
         Route::get('/', [ContractController::class, 'index']);
         Route::get('/{id}', [ContractController::class, 'show']);
+        Route::post('/{id}/message', [ContractController::class, 'message']); // section 3.12
     });
+
+    // Section 3.12 — Message Center
+    Route::get('/messages', MessageCenterController::class);
+    Route::prefix('conversations')->group(function () {
+        Route::get('/{id}/messages', [ConversationController::class, 'messages']);
+        Route::post('/{id}/messages', [ConversationController::class, 'reply']);
+    });
+
+    // Section 3.13 — User Dashboard
+    Route::get('/dashboard', DashboardController::class);
 });

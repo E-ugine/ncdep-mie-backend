@@ -93,6 +93,16 @@ class RequirementControllerTest extends TestCase
         $this->assertArrayHasKey('capacity_fit', $match['reason']);
         $this->assertArrayHasKey('spec_compliance', $match['reason']);
 
+        // Purely additive supplier name/country enrichment — supplier_id above stays as-is.
+        $this->assertSame([
+            'id' => $supplier->id,
+            'name' => $supplier->name,
+            'country' => [
+                'name' => $supplier->country->name,
+                'iso_code' => $supplier->country->iso_code,
+            ],
+        ], $match['supplier']);
+
         $this->assertDatabaseHas('matches', [
             'buyer_requirement_id' => $requirement->id,
             'supplier_id' => $supplier->id,

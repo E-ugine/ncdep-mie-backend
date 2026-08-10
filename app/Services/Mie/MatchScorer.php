@@ -26,7 +26,7 @@ class MatchScorer
     public function candidatesFor(BuyerRequirement $requirement): Collection
     {
         return SupplierCapacity::where('product_form_id', $requirement->product->product_form_id)
-            ->with('supplier.users')
+            ->with(['supplier.users', 'supplier.country'])
             ->get();
     }
 

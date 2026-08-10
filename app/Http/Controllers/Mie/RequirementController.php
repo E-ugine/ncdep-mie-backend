@@ -83,6 +83,14 @@ class RequirementController extends Controller
             $created[] = [
                 'id' => $match->id,
                 'supplier_id' => $match->supplier_id,
+                'supplier' => [
+                    'id' => $capacity->supplier->id,
+                    'name' => $capacity->supplier->name,
+                    'country' => [
+                        'name' => $capacity->supplier->country->name,
+                        'iso_code' => $capacity->supplier->country->iso_code,
+                    ],
+                ],
                 'score' => $match->score,
                 'reason' => $match->reason,
                 'fulfillable_volume' => (float) $match->fulfillable_volume,

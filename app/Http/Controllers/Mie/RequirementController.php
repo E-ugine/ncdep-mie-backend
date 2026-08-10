@@ -35,6 +35,36 @@ class RequirementController extends Controller
         private readonly OpportunityScorer $opportunityScorer,
     ) {}
 
+    /**
+     * The mockup's dedicated "Requirements" nav destination, distinct from Market Scan (an
+     * explicit search tool across everything) — this is the curated list of open requirements
+     * this user's own supplier could actually fulfill, scoped by product-form capacity exactly
+     * like CommandCenterController's metrics. No status filter (same convention as market-scan:
+     * filters are explicit, never implicit) and no separate "new" cutoff — that's what the
+     * command center's new_buyer_requirements tile already covers.
+     */
+    public function index(Request $request): JsonResponse
+    {
+        $supplier = $request->user()->supplier;
+        $productFormIds = $supplier ? $supplier->capacity()->pluck('product_form_id')->unique()->values()->all() : null;
+
+        $query = BuyerRequirement::with(RequirementPresenter::EAGER_LOADS);
+
+        if ($productFormIds !== null) {
+            $query->whereHas('product.productForm', fn ($q) => $q->whereIn('id', $productFormIds));
+        }
+
+        $requirements = $query->latest('id')->get();
+
+        return response()->json([
+            'scope' => $supplier ? 'supplier' : 'global',
+            'scope_note' => $supplier
+                ? "Scoped to the linked supplier profile (#{$supplier->id}: {$supplier->name}) via its product-form capacity."
+                : 'This user has no linked supplier profile (users.supplier_id is null) — returning every open requirement platform-wide. Link a supplier profile to scope this list.',
+            'requirements' => $requirements->map(fn ($requirement) => $this->presenter->present($requirement))->values(),
+        ]);
+    }
+
     public function show(int $id): JsonResponse
     {
         $requirement = BuyerRequirement::with(RequirementPresenter::EAGER_LOADS)->findOrFail($id);

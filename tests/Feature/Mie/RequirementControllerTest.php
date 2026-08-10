@@ -39,6 +39,42 @@ class RequirementControllerTest extends TestCase
         return $user;
     }
 
+    public function test_index_returns_every_open_requirement_globally_when_unlinked(): void
+    {
+        $this->actingAsGatedUser();
+
+        BuyerRequirement::factory()->count(3)->create();
+
+        $response = $this->getJson('/api/mie/requirements')->assertOk()->json();
+
+        $this->assertSame('global', $response['scope']);
+        $this->assertCount(3, $response['requirements']);
+        $this->assertArrayHasKey('opportunity_score', $response['requirements'][0]);
+    }
+
+    public function test_index_is_scoped_to_the_linked_suppliers_product_forms(): void
+    {
+        $matchingForm = ProductForm::factory()->create();
+        $otherForm = ProductForm::factory()->create();
+
+        $matchingProduct = Product::factory()->create(['product_form_id' => $matchingForm->id]);
+        $otherProduct = Product::factory()->create(['product_form_id' => $otherForm->id]);
+
+        $matchingRequirement = BuyerRequirement::factory()->create(['product_id' => $matchingProduct->id]);
+        BuyerRequirement::factory()->create(['product_id' => $otherProduct->id]);
+
+        $supplier = Supplier::factory()->create();
+        SupplierCapacity::factory()->create(['supplier_id' => $supplier->id, 'product_form_id' => $matchingForm->id]);
+        $user = User::factory()->create(['supplier_id' => $supplier->id]);
+        $this->actingAs($user)->withSession(['module_access.granted_at' => now()->toISOString()]);
+
+        $response = $this->getJson('/api/mie/requirements')->assertOk()->json();
+
+        $this->assertSame('supplier', $response['scope']);
+        $this->assertCount(1, $response['requirements']);
+        $this->assertSame($matchingRequirement->id, $response['requirements'][0]['id']);
+    }
+
     public function test_show_returns_requirement_detail_via_shared_presenter(): void
     {
         $this->actingAsGatedUser();

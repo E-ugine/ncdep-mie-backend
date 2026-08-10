@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\AuthController;
 use App\Http\Controllers\Mie\BuyerController;
 use App\Http\Controllers\Mie\CommandCenterController;
 use App\Http\Controllers\Mie\ContractController;
@@ -15,6 +16,22 @@ use App\Http\Controllers\ModuleAccess\PinController;
 use Illuminate\Support\Facades\Route;
 
 Route::get('/ping', fn () => response()->json(['status' => 'ok']));
+
+/*
+|--------------------------------------------------------------------------
+| Standard login (Sanctum SPA session auth)
+|--------------------------------------------------------------------------
+|
+| This sits BELOW the module-access gate — it's the ordinary login the spec
+| assumes already exists before section 1.1's gate even begins. Nothing here
+| is module-specific.
+*/
+Route::post('/login', [AuthController::class, 'login'])->middleware('throttle:5,1');
+
+Route::middleware('auth:sanctum')->group(function () {
+    Route::post('/logout', [AuthController::class, 'logout']);
+    Route::get('/user', [AuthController::class, 'user']);
+});
 
 /*
 |--------------------------------------------------------------------------

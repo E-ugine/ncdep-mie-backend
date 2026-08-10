@@ -30,20 +30,28 @@ class MessageCenterController extends Controller
     {
         $userId = $request->user()->id;
 
+        // Build the notifications payload from their read_at as of THIS request (so a
+        // notification that just became unread is still reported as unread here), then mark
+        // them seen for next time — opening the message center is the closest thing this app has
+        // to a per-notification "open" action, since there's no dedicated notification screen.
+        $notifications = Notification::where('user_id', $userId)
+            ->latest('id')
+            ->get()
+            ->map(fn (Notification $notification) => [
+                'id' => $notification->id,
+                'type' => $notification->type,
+                'data' => $notification->data,
+                'read_at' => $notification->read_at?->toISOString(),
+                'created_at' => $notification->created_at->toISOString(),
+            ])->values();
+
+        Notification::where('user_id', $userId)->whereNull('read_at')->update(['read_at' => now()]);
+
         return response()->json([
             'requirement_conversations' => $this->conversationsFor(BuyerRequirement::class, $userId),
             'deal_conversations' => $this->conversationsFor(Deal::class, $userId),
             'contract_conversations' => $this->conversationsFor(Contract::class, $userId),
-            'system_notifications' => Notification::where('user_id', $userId)
-                ->latest('id')
-                ->get()
-                ->map(fn (Notification $notification) => [
-                    'id' => $notification->id,
-                    'type' => $notification->type,
-                    'data' => $notification->data,
-                    'read_at' => $notification->read_at?->toISOString(),
-                    'created_at' => $notification->created_at->toISOString(),
-                ])->values(),
+            'system_notifications' => $notifications,
         ]);
     }
 

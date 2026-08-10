@@ -126,11 +126,21 @@ class DashboardController extends Controller
                 'value_by_status' => ['draft' => 0.0, 'active' => 0.0, 'completed' => 0.0],
                 'expected_revenue' => 0.0,
                 'receivables' => 0.0,
+                'receivables_breakdown' => [],
                 'note' => "This user has no linked supplier profile — every figure is 0 rather than a global aggregate, since 'my money' implies this user's own contracts specifically.",
             ];
         }
 
         $contracts = fn () => $this->supplierContracts($supplier);
+
+        // Real per-contract rows behind the receivables total — deliberately no due-date/aging
+        // fields (no due-date concept exists anywhere in the schema, see design-tokens-v3.md's
+        // "explicitly do not carry over" list), just what the total is actually made of.
+        $receivableContracts = $contracts()
+            ->where('shipment_status', ShipmentStatus::Delivered->value)
+            ->whereHas('deal', fn ($query) => $query->where('pipeline_stage', DealPipelineStage::PaymentPending->value))
+            ->with('deal.negotiation.offer.match.buyerRequirement.buyer')
+            ->get();
 
         return [
             'value_by_status' => [
@@ -144,11 +154,15 @@ class DashboardController extends Controller
             // payment not yet received (the deal's pipeline_stage is still payment_pending, i.e.
             // hasn't reached 'completed' yet). Pure aggregation of already-recorded state, no
             // payment processing logic.
-            'receivables' => (float) $contracts()
-                ->where('shipment_status', ShipmentStatus::Delivered->value)
-                ->whereHas('deal', fn ($query) => $query->where('pipeline_stage', DealPipelineStage::PaymentPending->value))
-                ->sum('value'),
+            'receivables' => (float) $receivableContracts->sum('value'),
             'receivables_definition' => "Contracts with shipment_status = 'delivered' whose deal's pipeline_stage = 'payment_pending' — delivered, not yet paid.",
+            'receivables_breakdown' => $receivableContracts->map(fn ($contract) => [
+                'contract_id' => $contract->id,
+                'contract_number' => $contract->contract_number,
+                'buyer' => $contract->deal?->negotiation?->offer?->match?->buyerRequirement?->buyer?->name,
+                'value' => (float) $contract->value,
+                'currency' => $contract->currency,
+            ])->values(),
         ];
     }
 

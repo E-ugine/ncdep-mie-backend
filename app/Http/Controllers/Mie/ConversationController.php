@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Mie;
 
 use App\Http\Controllers\Controller;
 use App\Models\Conversation;
+use App\Models\Message;
 use App\Services\Mie\ConversationMessenger;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -16,9 +17,20 @@ class ConversationController extends Controller
 {
     public function __construct(private readonly ConversationMessenger $messenger) {}
 
-    public function messages(int $id): JsonResponse
+    public function messages(Request $request, int $id): JsonResponse
     {
-        $conversation = Conversation::with('messages.sender')->findOrFail($id);
+        $conversation = Conversation::findOrFail($id);
+
+        // Opening a thread is the "seen" moment for it — stamp read_at on exactly the rows
+        // CommandCenterController::unreadMessagesCount and MessageCenterController::conversationsFor
+        // already treat as unread for this user (other people's messages, not yet read), so the
+        // unread counts elsewhere in the app actually decrease after this call, not just here.
+        Message::where('conversation_id', $conversation->id)
+            ->whereNull('read_at')
+            ->where('sender_id', '!=', $request->user()->id)
+            ->update(['read_at' => now()]);
+
+        $conversation->load('messages.sender');
 
         return response()->json([
             'conversation_id' => $conversation->id,

@@ -108,6 +108,32 @@ class MessageCenterTest extends TestCase
         $this->assertSame('price_movement', $response['system_notifications'][0]['type']);
     }
 
+    public function test_opening_the_message_center_shows_notifications_as_unread_then_marks_them_read(): void
+    {
+        $user = $this->actingAsGatedUser();
+        $notification = Notification::factory()->create(['user_id' => $user->id, 'read_at' => null]);
+
+        $first = $this->getJson('/api/mie/messages')->assertOk()->json();
+        $this->assertNull($first['system_notifications'][0]['read_at']);
+
+        // The write is a side effect of the call above — a fresh load off the DB must now show it read.
+        $this->assertNotNull($notification->fresh()->read_at);
+
+        $second = $this->getJson('/api/mie/messages')->assertOk()->json();
+        $this->assertNotNull($second['system_notifications'][0]['read_at']);
+    }
+
+    public function test_opening_the_message_center_never_marks_another_users_notifications_read(): void
+    {
+        $this->actingAsGatedUser();
+        $otherUser = User::factory()->create();
+        $theirNotification = Notification::factory()->create(['user_id' => $otherUser->id, 'read_at' => null]);
+
+        $this->getJson('/api/mie/messages')->assertOk();
+
+        $this->assertNull($theirNotification->fresh()->read_at);
+    }
+
     public function test_conversation_history_and_reply(): void
     {
         $this->actingAsGatedUser();

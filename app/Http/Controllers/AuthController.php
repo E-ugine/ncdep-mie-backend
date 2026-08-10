@@ -54,6 +54,13 @@ class AuthController extends Controller
             'name' => $user->name,
             'email' => $user->email,
             'supplier_id' => $user->supplier_id,
+            // The sidebar identity card needs the company name, not just the id — null when
+            // unlinked, same as supplier_id, rather than fabricating a placeholder company.
+            'supplier_name' => $user->supplier?->name,
+            // Dashboard subtitle ("Company · Country") needs a real location — the supplier's
+            // country, not a fabricated sub-region (the mockup's "Nyeri & Kirinyaga" county detail
+            // has no equivalent column anywhere in the schema).
+            'supplier_country' => $user->supplier?->country?->name,
         ];
     }
 }

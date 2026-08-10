@@ -3,12 +3,16 @@
 namespace Tests\Feature\Mie;
 
 use App\Enums\ContractStatus;
+use App\Enums\DealEventType;
 use App\Enums\DealPipelineStage;
+use App\Enums\PaymentStatus;
 use App\Models\BuyerRequirement;
 use App\Models\Contract;
 use App\Models\Conversation;
 use App\Models\Deal;
+use App\Models\DealEvent;
 use App\Models\Message;
+use App\Models\Payment;
 use App\Models\Product;
 use App\Models\ProductForm;
 use App\Models\Supplier;
@@ -266,5 +270,180 @@ class CommandCenterTest extends TestCase
         $this->assertSame('supplier', $scoped['scope']);
         // 50 * 4 = 200 from the matching-form requirement only; the other-form one (1000 * 900) is excluded.
         $this->assertEquals(200.0, $scoped['total_addressable_opportunity_value']);
+    }
+
+    public function test_supply_gaps_are_ranked_largest_first_and_exclude_non_positive_gaps(): void
+    {
+        $this->actingAsGatedUser();
+
+        SupplyGap::factory()->create(['demand_volume' => 500, 'contracted_volume' => 400]); // gap 100
+        SupplyGap::factory()->create(['demand_volume' => 900, 'contracted_volume' => 100]); // gap 800
+        SupplyGap::factory()->create(['demand_volume' => 300, 'contracted_volume' => 250]); // gap 50
+        SupplyGap::factory()->create(['demand_volume' => 100, 'contracted_volume' => 100]); // gap 0, excluded
+        SupplyGap::factory()->create(['demand_volume' => 50, 'contracted_volume' => 80]); // negative, excluded
+
+        $gaps = $this->getJson('/api/mie/command-center')->json()['supply_gaps'];
+
+        $this->assertCount(3, $gaps);
+        $this->assertEquals([800.0, 100.0, 50.0], array_column($gaps, 'gap'));
+        $this->assertArrayHasKey('commodity', $gaps[0]);
+        $this->assertArrayHasKey('buyer', $gaps[0]);
+    }
+
+    public function test_supply_gaps_respect_the_configured_limit(): void
+    {
+        $this->actingAsGatedUser();
+        config(['mie.command_center.supply_gaps_limit' => 2]);
+
+        SupplyGap::factory()->count(4)->create(['demand_volume' => 500, 'contracted_volume' => 100]);
+
+        $gaps = $this->getJson('/api/mie/command-center')->json()['supply_gaps'];
+
+        $this->assertCount(2, $gaps);
+    }
+
+    public function test_supply_gaps_are_scoped_to_the_linked_suppliers_product_forms(): void
+    {
+        $matchingForm = ProductForm::factory()->create();
+        $otherForm = ProductForm::factory()->create();
+
+        $matchingRequirement = $this->requirementOnProductForm($matchingForm->id);
+        $otherRequirement = $this->requirementOnProductForm($otherForm->id);
+
+        SupplyGap::factory()->create(['buyer_requirement_id' => $matchingRequirement->id, 'demand_volume' => 500, 'contracted_volume' => 100]);
+        SupplyGap::factory()->create(['buyer_requirement_id' => $otherRequirement->id, 'demand_volume' => 900, 'contracted_volume' => 100]);
+
+        $this->actingAsSupplierLinkedUser($matchingForm->id);
+
+        $gaps = $this->getJson('/api/mie/command-center')->json()['supply_gaps'];
+
+        $this->assertCount(1, $gaps);
+        $this->assertSame($matchingRequirement->id, $gaps[0]['buyer_requirement_id']);
+    }
+
+    public function test_activity_feed_includes_new_requirements_stage_changes_and_confirmed_payments(): void
+    {
+        $this->actingAsGatedUser();
+
+        $requirement = BuyerRequirement::factory()->create();
+
+        // Deal::factory() cascades through negotiation/offer/match down to its OWN fresh
+        // BuyerRequirement, so matching purely on `type` isn't enough below — every assertion
+        // also checks link.id against the specific record this test created.
+        $deal = Deal::factory()->create();
+        DealEvent::factory()->create([
+            'deal_id' => $deal->id,
+            'event_type' => DealEventType::StageTransition,
+            'to_stage' => DealPipelineStage::ContractPending,
+        ]);
+
+        $contract = Contract::factory()->create(['deal_id' => $deal->id]);
+        Payment::factory()->create([
+            'contract_id' => $contract->id,
+            'status' => PaymentStatus::Paid,
+            'paid_at' => now(),
+            'amount' => 5000,
+            'currency' => 'USD',
+        ]);
+
+        $feed = collect($this->getJson('/api/mie/command-center')->json()['activity_feed']);
+
+        $requirementItem = $feed->first(fn ($item) => $item['type'] === 'new_requirement' && $item['link']['id'] === $requirement->id);
+        $this->assertNotNull($requirementItem);
+        $this->assertStringContainsString($requirement->buyer->name, $requirementItem['text']);
+        $this->assertSame('requirement', $requirementItem['link']['type']);
+
+        $stageItem = $feed->first(fn ($item) => $item['type'] === 'deal_stage_change' && $item['link']['id'] === $deal->id);
+        $this->assertNotNull($stageItem);
+        $this->assertSame("Deal #{$deal->id} advanced to Contract Pending", $stageItem['text']);
+        $this->assertSame('deal', $stageItem['link']['type']);
+
+        $paymentItem = $feed->first(fn ($item) => $item['type'] === 'payment_confirmed' && $item['link']['id'] === $deal->id);
+        $this->assertNotNull($paymentItem);
+        $this->assertStringContainsString('5,000.00', $paymentItem['text']);
+    }
+
+    public function test_activity_feed_excludes_items_outside_the_window_and_never_says_deposit(): void
+    {
+        $this->actingAsGatedUser();
+
+        BuyerRequirement::factory()->create();
+        $deal = Deal::factory()->create();
+
+        // Deal::factory()'s cascade creates its own fresh (today) BuyerRequirement along the way —
+        // push every requirement row (including that one and the explicit one above) out of the
+        // window in one shot, then age the deal-side rows individually.
+        BuyerRequirement::query()->update(['created_at' => now()->subDays(30)]);
+
+        $oldEvent = DealEvent::factory()->create(['deal_id' => $deal->id, 'event_type' => DealEventType::StageTransition]);
+        DealEvent::where('id', $oldEvent->id)->update(['created_at' => now()->subDays(30)]);
+
+        $contract = Contract::factory()->create(['deal_id' => $deal->id]);
+        Payment::factory()->create([
+            'contract_id' => $contract->id,
+            'status' => PaymentStatus::Paid,
+            'paid_at' => now()->subDays(30),
+        ]);
+
+        $feed = $this->getJson('/api/mie/command-center')->json()['activity_feed'];
+
+        $this->assertCount(0, $feed);
+        $this->assertStringNotContainsString('deposit', strtolower(json_encode($feed)));
+    }
+
+    public function test_activity_feed_sorts_newest_first_and_respects_the_configured_limit(): void
+    {
+        $this->actingAsGatedUser();
+        config(['mie.command_center.activity_feed_limit' => 2]);
+
+        $older = BuyerRequirement::factory()->create();
+        $newer = BuyerRequirement::factory()->create();
+        $deal = Deal::factory()->create();
+
+        // Push every OTHER buyer requirement (including the one Deal::factory()'s cascade just
+        // created) out of the window, so only $older and $newer are in contention below.
+        BuyerRequirement::where('id', $older->id)->update(['created_at' => now()->subDays(2)]);
+        BuyerRequirement::where('id', $newer->id)->update(['created_at' => now()->subHours(1)]);
+        BuyerRequirement::whereNotIn('id', [$older->id, $newer->id])->update(['created_at' => now()->subDays(30)]);
+
+        DealEvent::factory()->create([
+            'deal_id' => $deal->id,
+            'event_type' => DealEventType::StageTransition,
+            'created_at' => now()->subMinutes(5),
+        ]);
+
+        $feed = $this->getJson('/api/mie/command-center')->json()['activity_feed'];
+
+        $this->assertCount(2, $feed);
+        // Newest first: the deal-stage change (5 min ago) beats the newer requirement (1 hour ago),
+        // and both beat the older requirement (2 days ago) — which must be pushed out by the limit.
+        $this->assertSame('deal_stage_change', $feed[0]['type']);
+        $this->assertSame('new_requirement', $feed[1]['type']);
+    }
+
+    public function test_activity_feed_deal_stage_changes_are_scoped_to_the_linked_supplier(): void
+    {
+        // Deliberately not using actingAsSupplierLinkedUser() here — that helper mints its OWN
+        // supplier for capacity/product-form scoping tests. This test needs the acting user linked
+        // to the EXACT supplier behind $myDeal's match, since deal scoping goes by supplier_id
+        // directly (mirroring DashboardController::supplierDeals), not by product-form capacity.
+        $supplier = Supplier::factory()->create();
+        $match = SupplierMatch::factory()->create(['supplier_id' => $supplier->id]);
+        $offer = \App\Models\Offer::factory()->create(['match_id' => $match->id]);
+        $negotiation = \App\Models\Negotiation::factory()->create(['offer_id' => $offer->id]);
+        $myDeal = Deal::factory()->create(['negotiation_id' => $negotiation->id]);
+        DealEvent::factory()->create(['deal_id' => $myDeal->id, 'event_type' => DealEventType::StageTransition]);
+
+        $unrelatedDeal = Deal::factory()->create();
+        DealEvent::factory()->create(['deal_id' => $unrelatedDeal->id, 'event_type' => DealEventType::StageTransition]);
+
+        $user = User::factory()->create(['supplier_id' => $supplier->id]);
+        $this->actingAs($user)->withSession(['module_access.granted_at' => now()->toISOString()]);
+
+        $feed = $this->getJson('/api/mie/command-center')->json()['activity_feed'];
+        $dealIds = collect($feed)->where('type', 'deal_stage_change')->pluck('link.id');
+
+        $this->assertTrue($dealIds->contains($myDeal->id));
+        $this->assertFalse($dealIds->contains($unrelatedDeal->id));
     }
 }

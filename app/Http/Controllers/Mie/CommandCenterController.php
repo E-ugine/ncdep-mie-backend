@@ -3,16 +3,21 @@
 namespace App\Http\Controllers\Mie;
 
 use App\Enums\ContractStatus;
+use App\Enums\DealEventType;
 use App\Enums\DealPipelineStage;
+use App\Enums\PaymentStatus;
 use App\Http\Controllers\Controller;
 use App\Models\BuyerRequirement;
 use App\Models\Contract;
 use App\Models\Deal;
+use App\Models\DealEvent;
 use App\Models\Message;
+use App\Models\Payment;
 use App\Models\Supplier;
 use App\Models\SupplyGap;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Collection;
 
 /**
  * Section 3.1 — Market Command Center. Every figure here is a real query against the
@@ -71,6 +76,10 @@ class CommandCenterController extends Controller
             'new_market_opportunities_count' => $this->newMarketOpportunitiesCount($productFormIds),
 
             'total_addressable_opportunity_value' => $this->totalAddressableOpportunityValue($productFormIds),
+
+            'supply_gaps' => $this->supplyGaps($productFormIds),
+
+            'activity_feed' => $this->activityFeed($supplier, $productFormIds),
         ]);
     }
 
@@ -164,5 +173,108 @@ class CommandCenterController extends Controller
         }
 
         return round($total, 2);
+    }
+
+    /**
+     * Ranked "largest supply gaps" table — same predicate and scoping as openSupplyGapsCount,
+     * just returning rows instead of a count, ordered by gap size descending at the SQL level
+     * rather than sorting every row in PHP.
+     */
+    private function supplyGaps(?array $productFormIds): Collection
+    {
+        $query = SupplyGap::whereRaw('demand_volume - contracted_volume > 0')
+            ->with(['buyerRequirement.buyer', 'buyerRequirement.product.commodity', 'buyerRequirement.market']);
+
+        if ($productFormIds !== null) {
+            $query->whereHas('buyerRequirement.product.productForm', fn ($q) => $q->whereIn('id', $productFormIds));
+        }
+
+        return $query->orderByRaw('(demand_volume - contracted_volume) DESC')
+            ->limit((int) config('mie.command_center.supply_gaps_limit'))
+            ->get()
+            ->map(fn (SupplyGap $gap) => [
+                'buyer_requirement_id' => $gap->buyer_requirement_id,
+                'commodity' => $gap->buyerRequirement->product->commodity->name,
+                'market' => $gap->buyerRequirement->market?->name,
+                'buyer' => $gap->buyerRequirement->buyer->name,
+                'demand_volume' => (float) $gap->demand_volume,
+                'contracted_volume' => (float) $gap->contracted_volume,
+                'gap' => $gap->gap(),
+            ])
+            ->values();
+    }
+
+    /**
+     * "Needs your action" — a mixed, real activity feed assembled from three genuinely queryable
+     * sources (never narrative/invented text, see design-reference/design-tokens-v3.md on the
+     * frontend for why): new requirements, real deal-stage transitions (DealEvent, written by
+     * DealObserver — never a narrative audit trail), and confirmed payments (there is no
+     * deposit/balance distinction in the schema, so this is always "Payment confirmed", never
+     * "Deposit confirmed"). No offer/negotiation item type: neither has an audit table, only
+     * created_at/updated_at, which isn't enough to truthfully describe what happened.
+     */
+    private function activityFeed(?Supplier $supplier, ?array $productFormIds): Collection
+    {
+        $since = now()->subDays((int) config('mie.command_center.activity_feed_days'));
+
+        $newRequirements = BuyerRequirement::where('created_at', '>=', $since)
+            ->with('buyer', 'product.commodity')
+            ->when($productFormIds !== null, fn ($q) => $q->whereHas(
+                'product.productForm',
+                fn ($q2) => $q2->whereIn('id', $productFormIds)
+            ))
+            ->get()
+            ->map(fn (BuyerRequirement $requirement) => [
+                'type' => 'new_requirement',
+                'text' => "New requirement: {$requirement->volume} {$requirement->product->commodity->name}, {$requirement->buyer->name}",
+                'link' => ['type' => 'requirement', 'id' => $requirement->id],
+                'created_at' => $requirement->created_at,
+            ]);
+
+        $stageChanges = DealEvent::where('event_type', DealEventType::StageTransition)
+            ->where('created_at', '>=', $since)
+            ->when($supplier, fn ($q) => $q->whereHas(
+                'deal.negotiation.offer.match',
+                fn ($q2) => $q2->where('supplier_id', $supplier->id)
+            ))
+            ->get()
+            ->map(fn (DealEvent $event) => [
+                'type' => 'deal_stage_change',
+                'text' => "Deal #{$event->deal_id} advanced to {$this->humanizeStage($event->to_stage->value)}",
+                'link' => ['type' => 'deal', 'id' => $event->deal_id],
+                'created_at' => $event->created_at,
+            ]);
+
+        $payments = Payment::where('status', PaymentStatus::Paid)
+            ->whereNotNull('paid_at')
+            ->where('paid_at', '>=', $since)
+            ->with('contract')
+            ->when($supplier, fn ($q) => $q->whereHas(
+                'contract.deal.negotiation.offer.match',
+                fn ($q2) => $q2->where('supplier_id', $supplier->id)
+            ))
+            ->get()
+            ->map(fn (Payment $payment) => [
+                'type' => 'payment_confirmed',
+                'text' => 'Payment of '.number_format((float) $payment->amount, 2)." {$payment->currency} confirmed against Deal #{$payment->contract->deal_id}",
+                'link' => ['type' => 'deal', 'id' => $payment->contract->deal_id],
+                'created_at' => $payment->paid_at,
+            ]);
+
+        return $newRequirements->concat($stageChanges)->concat($payments)
+            ->sortByDesc(fn (array $item) => $item['created_at'])
+            ->take((int) config('mie.command_center.activity_feed_limit'))
+            ->map(fn (array $item) => [
+                'type' => $item['type'],
+                'text' => $item['text'],
+                'link' => $item['link'],
+                'created_at' => $item['created_at']->toISOString(),
+            ])
+            ->values();
+    }
+
+    private function humanizeStage(string $stage): string
+    {
+        return implode(' ', array_map('ucfirst', explode('_', $stage)));
     }
 }

@@ -185,6 +185,14 @@ class DashboardControllerTest extends TestCase
 
         // receivables = only the delivered-but-payment-pending one = 750
         $this->assertEquals(750.0, $money['receivables']);
+
+        // The breakdown is the real row(s) behind that total — exactly the one receivable
+        // contract, not the plain active/draft/completed ones, and no invented due-date field.
+        $this->assertCount(1, $money['receivables_breakdown']);
+        $this->assertEquals(750.0, $money['receivables_breakdown'][0]['value']);
+        $this->assertArrayNotHasKey('due_date', $money['receivables_breakdown'][0]);
+        $this->assertArrayHasKey('buyer', $money['receivables_breakdown'][0]);
+        $this->assertArrayHasKey('contract_number', $money['receivables_breakdown'][0]);
     }
 
     public function test_my_money_is_zeroed_out_with_note_when_unlinked(): void
@@ -195,6 +203,7 @@ class DashboardControllerTest extends TestCase
 
         $this->assertEquals(0.0, $response['my_money']['expected_revenue']);
         $this->assertEquals(0.0, $response['my_money']['receivables']);
+        $this->assertSame([], $response['my_money']['receivables_breakdown']);
         $this->assertStringContainsString('no linked supplier profile', $response['my_money']['note']);
     }
 
